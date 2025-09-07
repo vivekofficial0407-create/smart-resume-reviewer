@@ -1,0 +1,1615 @@
+# app.py - Complete Offline Resume Analyzer
+import streamlit as st
+from PyPDF2 import PdfReader
+import re
+from collections import Counter
+import difflib
+
+# --- Helper to extract text from PDF ---
+def extract_text_from_pdf(uploaded_file):
+    """Extract text from uploaded PDF file"""
+    try:
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        return text.strip()
+    except Exception as e:
+        st.error(f"Error reading PDF: {str(e)}")
+        return ""
+
+# --- Enhanced Role Keywords Database ---
+ROLE_KEYWORDS = {
+    "backend developer": [
+        "python", "java", "node.js", "javascript", "express", "spring", "spring boot", 
+        "django", "flask", "fastapi", "rest api", "api", "postgresql", "mysql", 
+        "mongodb", "sql", "docker", "kubernetes", "aws", "azure", "gcp", "git", 
+        "ci/cd", "redis", "microservices", "linux", "nginx", "apache", "rabbitmq", 
+        "kafka", "elasticsearch", "graphql", "orm", "hibernate", "serverless",
+        "lambda", "ec2", "s3", "rds", "jenkins", "gitlab", "github actions"
+    ],
+    "frontend developer": [
+        "javascript", "typescript", "react", "angular", "vue.js", "html", "css",
+        "sass", "scss", "webpack", "babel", "npm", "yarn", "git", "responsive design",
+        "bootstrap", "tailwind", "material ui", "redux", "mobx", "jest", "cypress",
+        "figma", "adobe xd", "ui/ux", "accessibility", "web performance", "seo",
+        "pwa", "spa", "dom", "ajax", "json", "xml", "jquery"
+    ],
+    "full stack developer": [
+        "javascript", "python", "react", "node.js", "express", "mongodb", "sql",
+        "html", "css", "git", "aws", "docker", "rest api", "redux", "webpack",
+        "typescript", "postgresql", "mysql", "linux", "nginx", "ci/cd", "agile",
+        "scrum", "mvc", "mvvm", "authentication", "authorization", "jwt"
+    ],
+    "data scientist": [
+        "python", "r", "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
+        "machine learning", "deep learning", "data analysis", "sql", "statistics", 
+        "nlp", "computer vision", "jupyter", "matplotlib", "seaborn", "plotly", 
+        "spark", "hadoop", "aws sagemaker", "azure ml", "tableau", "power bi", 
+        "feature engineering", "model deployment", "mlops", "a/b testing",
+        "hypothesis testing", "regression", "classification", "clustering"
+    ],
+    "data analyst": [
+        "sql", "excel", "tableau", "power bi", "python", "r", "pandas", "numpy",
+        "statistics", "data visualization", "pivot tables", "vlookup", "dashboard",
+        "reporting", "analytics", "business intelligence", "etl", "data modeling",
+        "kpi", "metrics", "statistical analysis", "data mining", "forecasting"
+    ],
+    "product manager": [
+        "roadmap", "stakeholder", "requirements", "agile", "scrum", "kanban", 
+        "metrics", "prioritization", "product strategy", "user stories", "wireframes",
+        "analytics", "a/b testing", "market research", "competitive analysis",
+        "jira", "confluence", "figma", "sql", "data analysis", "kpis", "okrs",
+        "user experience", "customer journey", "mvp", "go-to-market"
+    ],
+    "devops engineer": [
+        "aws", "azure", "gcp", "docker", "kubernetes", "jenkins", "gitlab ci",
+        "terraform", "ansible", "chef", "puppet", "linux", "bash", "python",
+        "monitoring", "prometheus", "grafana", "elk stack", "ci/cd", "git",
+        "nginx", "apache", "load balancing", "security", "networking", "vpc",
+        "cloudformation", "infrastructure as code", "helm", "istio"
+    ],
+    "machine learning engineer": [
+        "python", "tensorflow", "pytorch", "scikit-learn", "pandas", "numpy",
+        "docker", "kubernetes", "aws", "mlops", "model deployment", "feature engineering",
+        "data pipeline", "spark", "airflow", "git", "ci/cd", "monitoring",
+        "deep learning", "neural networks", "computer vision", "nlp", "model serving",
+        "model versioning", "experiment tracking", "hyperparameter tuning"
+    ],
+    "software engineer": [
+        "programming", "algorithms", "data structures", "object oriented programming",
+        "design patterns", "testing", "debugging", "version control", "git",
+        "agile", "scrum", "clean code", "code review", "refactoring", "optimization",
+        "performance", "scalability", "architecture", "system design"
+    ],
+    "mobile developer": [
+        "react native", "flutter", "ios", "android", "swift", "kotlin", "java",
+        "objective-c", "xcode", "android studio", "firebase", "rest api", "git",
+        "app store", "google play", "ui/ux", "responsive design", "testing",
+        "push notifications", "in-app purchases", "mobile security", "cross-platform"
+    ],
+    "qa engineer": [
+        "testing", "automation", "selenium", "junit", "testng", "cypress",
+        "postman", "jira", "bug tracking", "test cases", "regression testing",
+        "performance testing", "load testing", "api testing", "sql", "git",
+        "manual testing", "functional testing", "integration testing", "unit testing"
+    ],
+    "cloud engineer": [
+        "aws", "azure", "gcp", "terraform", "kubernetes", "docker", "jenkins",
+        "ansible", "linux", "networking", "security", "monitoring", "ci/cd",
+        "infrastructure as code", "serverless", "lambda", "s3", "ec2", "vpc",
+        "cloudformation", "auto scaling", "load balancer", "cdn", "iam"
+    ],
+    "ui/ux designer": [
+        "figma", "sketch", "adobe xd", "photoshop", "illustrator", "wireframes",
+        "prototyping", "user research", "usability testing", "design systems",
+        "html", "css", "javascript", "responsive design", "accessibility",
+        "user journey", "personas", "information architecture", "interaction design"
+    ]
+}
+
+# --- Advanced Resume Analysis Engine ---
+def normalize_token(token):
+    """Normalize tokens for better matching"""
+    normalizations = {
+        "nodejs": "node.js", "node": "node.js", "js": "javascript",
+        "ts": "typescript", "py": "python", "postgresql": "postgres",
+        "postgres": "postgresql", "mongo": "mongodb", "k8s": "kubernetes",
+        "react.js": "react", "vue.js": "vue", "angular.js": "angular"
+    }
+    return normalizations.get(token.lower(), token.lower())
+
+def extract_keywords_from_text(text, min_length=3):
+    """Extract meaningful keywords from text"""
+    # Remove common stop words
+    stop_words = {
+        'and', 'or', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+        'from', 'up', 'about', 'into', 'through', 'during', 'before', 'after',
+        'above', 'below', 'between', 'among', 'is', 'are', 'was', 'were', 'be',
+        'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+        'would', 'should', 'could', 'can', 'may', 'might', 'must', 'shall',
+        'company', 'team', 'work', 'working', 'job', 'role', 'position',
+        'experience', 'years', 'strong', 'good', 'excellent', 'ability'
+    }
+    
+    # Extract words and phrases
+    words = re.findall(r'\b\w+\b', text.lower())
+    keywords = [word for word in words if len(word) >= min_length and word not in stop_words]
+    
+    # Count frequency
+    keyword_freq = Counter(keywords)
+    return keyword_freq
+
+def detect_resume_sections(text):
+    """Detect common resume sections"""
+    sections = {}
+    text_lower = text.lower()
+    
+    section_patterns = {
+        'summary': [r'summary', r'profile', r'about\s+me', r'overview', r'objective'],
+        'experience': [r'experience', r'work\s+experience', r'professional\s+experience', r'employment', r'career'],
+        'education': [r'education', r'academic', r'qualifications', r'degree', r'university', r'college'],
+        'skills': [r'skills', r'technical\s+skills', r'competencies', r'technologies', r'expertise'],
+        'projects': [r'projects?', r'personal\s+projects?', r'key\s+projects?', r'portfolio'],
+        'certifications': [r'certifications?', r'certificates?', r'credentials?', r'licensed?'],
+        'achievements': [r'achievements?', r'accomplishments?', r'awards?', r'honors?'],
+        'languages': [r'languages?', r'linguistic', r'fluent'],
+        'interests': [r'interests?', r'hobbies', r'activities']
+    }
+    
+    for section, patterns in section_patterns.items():
+        found = any(re.search(pattern, text_lower) for pattern in patterns)
+        sections[section] = found
+    
+    return sections
+
+def calculate_keyword_match_score(resume_text, target_keywords):
+    """Calculate how well resume matches target keywords"""
+    resume_lower = resume_text.lower()
+    matched_keywords = []
+    
+    for keyword in target_keywords:
+        keyword_lower = keyword.lower()
+        # Direct match
+        if keyword_lower in resume_lower:
+            matched_keywords.append(keyword)
+        else:
+            # Fuzzy match for similar terms
+            resume_words = re.findall(r'\b\w+\b', resume_lower)
+            for word in resume_words:
+                if len(word) > 3 and difflib.SequenceMatcher(a=word, b=keyword_lower).ratio() > 0.85:
+                    matched_keywords.append(keyword)
+                    break
+    
+    return list(set(matched_keywords))  # Remove duplicates
+
+def analyze_achievements(text):
+    """Analyze quantifiable achievements in resume"""
+    achievement_patterns = [
+        r'\b\d{1,3}%\b',  # Percentages
+        r'\b\d{1,6}\+?\b',  # Numbers with optional +
+        r'\$\d{1,10}[kmb]?\b',  # Dollar amounts
+        r'\b\d+\s*(years?|months?|weeks?|days?)\b',  # Time periods
+        r'\b(increased|decreased|improved|reduced|saved|generated|achieved|delivered)\s+\w*\s*\d+',
+        r'\b(led|managed|supervised)\s+\w*\s*\d+',  # Leadership with numbers
+        r'\b\d+\s*(users?|customers?|clients?|projects?|teams?)\b'  # Scale indicators
+    ]
+    
+    achievements = []
+    for pattern in achievement_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        achievements.extend(matches)
+    
+    return achievements
+
+def analyze_action_verbs(text):
+    """Analyze use of strong action verbs"""
+    action_verbs = [
+        'achieved', 'built', 'created', 'designed', 'developed', 'established',
+        'implemented', 'improved', 'increased', 'led', 'managed', 'optimized',
+        'organized', 'reduced', 'solved', 'streamlined', 'supervised', 'trained',
+        'collaborated', 'coordinated', 'delivered', 'executed', 'facilitated',
+        'initiated', 'launched', 'maintained', 'mentored', 'negotiated', 'planned'
+    ]
+    
+    text_lower = text.lower()
+    found_verbs = [verb for verb in action_verbs if f' {verb}' in text_lower or text_lower.startswith(verb)]
+    return list(set(found_verbs))
+
+def comprehensive_resume_analysis(resume_text, job_role, job_description=""):
+    """Perform comprehensive resume analysis"""
+    if not resume_text or len(resume_text.strip()) < 50:
+        return 0, "❌ Resume text is too short or empty. Please provide a complete resume."
+    
+    # Get role-specific keywords
+    role_keywords = ROLE_KEYWORDS.get(job_role.lower(), [])
+    
+    # Extract keywords from job description if provided
+    jd_keywords = []
+    if job_description:
+        jd_freq = extract_keywords_from_text(job_description, min_length=4)
+        jd_keywords = [word for word, freq in jd_freq.most_common(20) if freq >= 2]
+    
+    # Combine keywords
+    all_keywords = list(set(role_keywords + jd_keywords))
+    
+    # Analyze resume
+    sections = detect_resume_sections(resume_text)
+    matched_keywords = calculate_keyword_match_score(resume_text, all_keywords)
+    achievements = analyze_achievements(resume_text)
+    action_verbs = analyze_action_verbs(resume_text)
+    
+    # Calculate scores
+    score = 0
+    feedback_parts = []
+    strengths = []
+    weaknesses = []
+    
+    # Section Analysis (40 points)
+    critical_sections = ['experience', 'education', 'skills']
+    important_sections = ['summary', 'projects']
+    
+    sections_score = 0
+    for section in critical_sections:
+        if sections.get(section, False):
+            sections_score += 10
+            strengths.append(f"✅ Has {section.title()} section")
+        else:
+            weaknesses.append(f"❌ Missing {section.title()} section")
+    
+    for section in important_sections:
+        if sections.get(section, False):
+            sections_score += 5
+            strengths.append(f"✅ Has {section.title()} section")
+        else:
+            weaknesses.append(f"⚠️ Consider adding {section.title()} section")
+    
+    score += min(sections_score, 40)
+    
+    # Keyword Matching (35 points)
+    if all_keywords:
+        keyword_match_ratio = len(matched_keywords) / len(all_keywords)
+        keyword_score = int(keyword_match_ratio * 35)
+        score += keyword_score
+        
+        if keyword_match_ratio >= 0.7:
+            strengths.append(f"🎯 Excellent keyword match ({len(matched_keywords)}/{len(all_keywords)})")
+        elif keyword_match_ratio >= 0.5:
+            strengths.append(f"👍 Good keyword match ({len(matched_keywords)}/{len(all_keywords)})")
+        else:
+            weaknesses.append(f"🔍 Low keyword match ({len(matched_keywords)}/{len(all_keywords)}) - needs optimization")
+    
+    # Content Quality (25 points)
+    word_count = len(resume_text.split())
+    
+    # Word count scoring (0-8 points)
+    if 300 <= word_count <= 800:
+        score += 8
+        strengths.append(f"📝 Optimal length ({word_count} words)")
+    elif 200 <= word_count <= 1000:
+        score += 5
+        strengths.append(f"📝 Good length ({word_count} words)")
+    elif word_count < 200:
+        weaknesses.append(f"📝 Too short ({word_count} words)")
+    else:
+        weaknesses.append(f"📝 Too long ({word_count} words) - consider condensing")
+    
+    # Achievement scoring (0-10 points)
+    if len(achievements) >= 5:
+        score += 10
+        strengths.append(f"📊 Excellent use of metrics ({len(achievements)} quantifiable achievements)")
+    elif len(achievements) >= 3:
+        score += 7
+        strengths.append(f"📊 Good use of metrics ({len(achievements)} achievements)")
+    elif len(achievements) >= 1:
+        score += 3
+        strengths.append(f"📊 Some metrics found ({len(achievements)} achievements)")
+    else:
+        weaknesses.append("📊 No quantifiable achievements - add numbers and metrics")
+    
+    # Action verb scoring (0-7 points)
+    if len(action_verbs) >= 8:
+        score += 7
+        strengths.append(f"💪 Great use of action verbs ({len(action_verbs)} different verbs)")
+    elif len(action_verbs) >= 5:
+        score += 5
+        strengths.append(f"💪 Good use of action verbs ({len(action_verbs)} different verbs)")
+    elif len(action_verbs) >= 2:
+        score += 2
+        strengths.append(f"💪 Some action verbs ({len(action_verbs)} verbs)")
+    else:
+        weaknesses.append("💪 Use more action verbs (developed, implemented, led, etc.)")
+    
+    # Ensure score is within bounds
+    score = max(0, min(100, score))
+    
+    # Build comprehensive feedback
+    feedback_parts.append(f"🎯 **RESUME ANALYSIS FOR: {job_role.upper()}**")
+    feedback_parts.append(f"📊 **ATS COMPATIBILITY SCORE: {score}/100**")
+    feedback_parts.append("")
+    
+    # Score interpretation
+    if score >= 90:
+        feedback_parts.append("🏆 **OUTSTANDING!** Your resume is exceptionally well-optimized for ATS systems and recruiters.")
+    elif score >= 80:
+        feedback_parts.append("🎉 **EXCELLENT!** Your resume is highly optimized with only minor improvements needed.")
+    elif score >= 70:
+        feedback_parts.append("👍 **GOOD!** Your resume has a solid foundation but could benefit from some optimization.")
+    elif score >= 60:
+        feedback_parts.append("⚡ **NEEDS IMPROVEMENT!** Your resume requires several enhancements for better ATS performance.")
+    else:
+        feedback_parts.append("🚀 **SIGNIFICANT WORK NEEDED!** Your resume needs major improvements for ATS optimization.")
+    
+    feedback_parts.append("")
+    
+    # Strengths
+    if strengths:
+        feedback_parts.append("✅ **STRENGTHS:**")
+        for strength in strengths:
+            feedback_parts.append(f"  • {strength}")
+        feedback_parts.append("")
+    
+    # Areas for improvement
+    if weaknesses:
+        feedback_parts.append("🔍 **AREAS FOR IMPROVEMENT:**")
+        for weakness in weaknesses:
+            feedback_parts.append(f"  • {weakness}")
+        feedback_parts.append("")
+    
+    # Matched keywords
+    if matched_keywords:
+        feedback_parts.append(f"🎯 **MATCHED KEYWORDS ({len(matched_keywords)} found):**")
+        keyword_display = ", ".join(sorted(matched_keywords)[:20])
+        feedback_parts.append(f"  {keyword_display}")
+        feedback_parts.append("")
+    
+    # Missing keywords
+    missing_keywords = [kw for kw in all_keywords if kw not in [mk.lower() for mk in matched_keywords]]
+    if missing_keywords:
+        feedback_parts.append("🔍 **HIGH-IMPACT MISSING KEYWORDS:**")
+        priority_missing = missing_keywords[:15]
+        missing_display = ", ".join(priority_missing)
+        feedback_parts.append(f"  {missing_display}")
+        feedback_parts.append("")
+    
+    # Achievements found
+    if achievements:
+        feedback_parts.append(f"📊 **QUANTIFIABLE ACHIEVEMENTS FOUND ({len(achievements)}):**")
+        achievement_sample = achievements[:10]
+        feedback_parts.append(f"  {', '.join(achievement_sample)}")
+        feedback_parts.append("")
+    
+    # Action verbs found
+    if action_verbs:
+        feedback_parts.append(f"💪 **STRONG ACTION VERBS USED ({len(action_verbs)}):**")
+        feedback_parts.append(f"  {', '.join(sorted(action_verbs))}")
+        feedback_parts.append("")
+    
+    # Actionable recommendations
+    recommendations = []
+    
+    if score < 70:
+        recommendations.extend([
+            "🎯 **Priority 1:** Add missing keywords from the list above",
+            "📊 **Priority 2:** Include specific numbers and metrics in your achievements",
+            "🏗️ **Priority 3:** Ensure all critical sections are present and well-organized"
+        ])
+    
+    if len(achievements) < 3:
+        recommendations.append("📈 **Add metrics:** Include percentages, numbers, dollar amounts, and time periods")
+    
+    if len(action_verbs) < 5:
+        recommendations.append("💪 **Use stronger verbs:** Start bullet points with action words like 'developed', 'implemented', 'led'")
+    
+    if not sections.get('summary'):
+        recommendations.append("📝 **Add summary:** Include a compelling professional summary at the top")
+    
+    recommendations.extend([
+        "🎯 **Tailor keywords:** Match the exact terms used in job descriptions",
+        "📋 **ATS formatting:** Use standard headings and simple, clean formatting",
+        "🔄 **Customize:** Adapt your resume for each specific job application",
+        "📊 **Quantify everything:** Add numbers to show your impact and results"
+    ])
+    
+    feedback_parts.append("💡 **ACTIONABLE RECOMMENDATIONS:**")
+    for i, rec in enumerate(recommendations[:8], 1):
+        feedback_parts.append(f"  {i}. {rec}")
+    
+    feedback_parts.append("")
+    feedback_parts.append("📋 **NEXT STEPS:**")
+    feedback_parts.append("  • Implement the high-priority recommendations above")
+    feedback_parts.append("  • Add missing keywords naturally throughout your resume")
+    feedback_parts.append("  • Include more quantifiable achievements with specific metrics")
+    feedback_parts.append("  • Re-analyze your resume after improvements to track progress")
+    
+    return score, "\n".join(feedback_parts)
+
+# --- Streamlit App Configuration ---
+st.set_page_config(
+    page_title="Professional Resume Analyzer", 
+    page_icon="📄", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# --- Custom CSS ---
+st.markdown("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Futuristic Premium Website</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        /* Advanced CSS Variables for Dynamic Theming */
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 35%, #f093fb 100%);
+            --secondary-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --accent-gradient: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            --glass-bg: rgba(255, 255, 255, 0.08);
+            --glass-border: rgba(255, 255, 255, 0.18);
+            --shadow-primary: 0 25px 50px rgba(102, 126, 234, 0.3);
+            --shadow-glow: 0 0 60px rgba(102, 126, 234, 0.4);
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.8);
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a2e;
+            --accent-color: #00d4ff;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            background-image: 
+                radial-gradient(circle at 25% 25%, rgba(102, 126, 234, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 75% 75%, rgba(250, 112, 154, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 50% 50%, rgba(0, 212, 255, 0.1) 0%, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-primary);
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        /* Dynamic Background Animation */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                linear-gradient(45deg, transparent 30%, rgba(102, 126, 234, 0.03) 50%, transparent 70%),
+                linear-gradient(-45deg, transparent 30%, rgba(250, 112, 154, 0.03) 50%, transparent 70%);
+            background-size: 200% 200%;
+            animation: backgroundShift 20s ease-in-out infinite;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        @keyframes backgroundShift {
+            0%, 100% { background-position: 0% 0%, 100% 100%; }
+            25% { background-position: 100% 0%, 0% 100%; }
+            50% { background-position: 100% 100%, 0% 0%; }
+            75% { background-position: 0% 100%, 100% 0%; }
+        }
+
+        /* Advanced Animations */
+        @keyframes morphGlow {
+            0%, 100% {
+                border-radius: 20px;
+                box-shadow: var(--shadow-primary);
+                filter: hue-rotate(0deg);
+            }
+            33% {
+                border-radius: 30px 15px 25px 20px;
+                box-shadow: var(--shadow-glow);
+                filter: hue-rotate(60deg);
+            }
+            66% {
+                border-radius: 15px 30px 20px 25px;
+                box-shadow: 0 35px 70px rgba(250, 112, 154, 0.4);
+                filter: hue-rotate(120deg);
+            }
+        }
+
+        @keyframes floatingElements {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            25% { transform: translateY(-20px) rotate(2deg); }
+            50% { transform: translateY(-15px) rotate(0deg); }
+            75% { transform: translateY(-25px) rotate(-2deg); }
+        }
+
+        @keyframes textShimmer {
+            0% { 
+                background-position: -200% center; 
+                text-shadow: 0 0 20px rgba(102, 126, 234, 0.5);
+            }
+            100% { 
+                background-position: 200% center; 
+                text-shadow: 0 0 30px rgba(250, 112, 154, 0.7);
+            }
+        }
+
+        @keyframes particleFloat {
+            0% { 
+                transform: translateY(100vh) translateX(0px) rotate(0deg) scale(0);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+                transform: translateY(90vh) translateX(20px) rotate(45deg) scale(1);
+            }
+            90% {
+                opacity: 1;
+                transform: translateY(10vh) translateX(-20px) rotate(315deg) scale(1);
+            }
+            100% { 
+                transform: translateY(-10vh) translateX(0px) rotate(360deg) scale(0);
+                opacity: 0;
+            }
+        }
+
+        /* Floating Particles */
+        .particle {
+            position: fixed;
+            width: 4px;
+            height: 4px;
+            background: var(--accent-color);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 1;
+            animation: particleFloat 15s linear infinite;
+            box-shadow: 0 0 10px currentColor;
+        }
+
+        .particle:nth-child(1) { left: 10%; animation-delay: 0s; animation-duration: 12s; }
+        .particle:nth-child(2) { left: 20%; animation-delay: 2s; animation-duration: 18s; }
+        .particle:nth-child(3) { left: 30%; animation-delay: 4s; animation-duration: 14s; }
+        .particle:nth-child(4) { left: 40%; animation-delay: 6s; animation-duration: 16s; }
+        .particle:nth-child(5) { left: 50%; animation-delay: 8s; animation-duration: 13s; }
+        .particle:nth-child(6) { left: 60%; animation-delay: 1s; animation-duration: 17s; }
+        .particle:nth-child(7) { left: 70%; animation-delay: 3s; animation-duration: 15s; }
+        .particle:nth-child(8) { left: 80%; animation-delay: 5s; animation-duration: 19s; }
+        .particle:nth-child(9) { left: 90%; animation-delay: 7s; animation-duration: 11s; }
+
+        /* Main Container */
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+            position: relative;
+            z-index: 10;
+        }
+
+        /* Futuristic Header */
+        .main-header {
+            background: var(--glass-bg);
+            backdrop-filter: blur(30px);
+            border: 2px solid var(--glass-border);
+            border-radius: 25px;
+            padding: 4rem 3rem;
+            margin-bottom: 3rem;
+            position: relative;
+            overflow: hidden;
+            animation: morphGlow 8s ease-in-out infinite, floatingElements 6s ease-in-out infinite;
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.320, 1);
+        }
+
+        .main-header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                var(--accent-color) 60deg,
+                transparent 120deg,
+                rgba(250, 112, 154, 0.8) 180deg,
+                transparent 240deg,
+                rgba(102, 126, 234, 0.8) 300deg,
+                transparent 360deg
+            );
+            animation: spin 20s linear infinite;
+            opacity: 0.1;
+        }
+
+        .main-header::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, 
+                rgba(255, 255, 255, 0.1) 0%, 
+                transparent 30%, 
+                rgba(0, 212, 255, 0.1) 70%, 
+                transparent 100%);
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+
+        .main-header:hover::after {
+            opacity: 1;
+        }
+
+        .main-header:hover {
+            transform: translateY(-10px) scale(1.02);
+            border-color: var(--accent-color);
+            box-shadow: 
+                0 40px 80px rgba(0, 212, 255, 0.3),
+                0 0 100px rgba(102, 126, 234, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+
+        .header-title {
+            font-size: 3.5rem;
+            font-weight: 800;
+            background: var(--primary-gradient);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-size: 200% 200%;
+            animation: textShimmer 4s ease-in-out infinite;
+            text-align: center;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .header-subtitle {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            text-align: center;
+            font-weight: 300;
+            opacity: 0.9;
+            letter-spacing: 0.02em;
+        }
+
+        /* Premium Score Display */
+        .score-display {
+            background: var(--glass-bg);
+            backdrop-filter: blur(30px); /* Match main-header blur */
+            border: 2px solid var(--glass-border); /* Match main-header border */
+            border-radius: 25px; /* Match main-header radius */
+            padding: 4rem 3rem; /* Match main-header padding */
+            margin: 3rem 0;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            animation: morphGlow 8s ease-in-out infinite, floatingElements 6s ease-in-out infinite; /* Match main-header animation */
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.320, 1);
+            cursor: pointer;
+        }
+
+        .score-display::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                var(--accent-color) 60deg,
+                transparent 120deg,
+                rgba(250, 112, 154, 0.8) 180deg,
+                transparent 240deg,
+                rgba(102, 126, 234, 0.8) 300deg,
+                transparent 360deg
+            );
+            animation: spin 20s linear infinite;
+            opacity: 0.1;
+        }
+
+        .score-display::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, 
+                rgba(255, 255, 255, 0.1) 0%, 
+                transparent 30%, 
+                rgba(0, 212, 255, 0.1) 70%, 
+                transparent 100%);
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+
+        .score-display:hover::after {
+            opacity: 1;
+        }
+
+        .score-display:hover {
+            transform: translateY(-10px) scale(1.02);
+            border-color: var(--accent-color);
+            box-shadow: 
+                0 40px 80px rgba(0, 212, 255, 0.3),
+                0 0 100px rgba(102, 126, 234, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+
+        .score-number {
+            font-size: 4rem;
+            font-weight: 900;
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--primary-gradient);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-size: 200% 200%;
+            animation: textShimmer 4s ease-in-out infinite;
+            margin-bottom: 1rem;
+            text-shadow: 0 0 30px rgba(79, 172, 254, 0.5);
+        }
+
+        .score-label {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        /* Interactive Buttons */
+        .btn-futuristic {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border: 2px solid var(--glass-border);
+            border-radius: 15px;
+            padding: 1rem 2.5rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.320, 1);
+            margin: 1rem 0.5rem;
+            display: inline-block;
+            text-decoration: none;
+        }
+
+        .btn-futuristic::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: var(--accent-gradient);
+            transition: left 0.6s cubic-bezier(0.23, 1, 0.320, 1);
+            z-index: -1;
+        }
+
+        .btn-futuristic:hover {
+            transform: translateY(-5px) scale(1.05);
+            border-color: var(--accent-color);
+            color: var(--bg-primary);
+            box-shadow: 
+                0 20px 40px rgba(250, 112, 154, 0.4),
+                0 0 50px rgba(254, 225, 64, 0.3);
+        }
+
+        .btn-futuristic:hover::before {
+            left: 0;
+        }
+
+        .btn-futuristic:active {
+            transform: translateY(-2px) scale(1.02);
+        }
+
+        /* Glassmorphism Cards */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(25px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 2.5rem;
+            margin: 2rem 0;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.5s cubic-bezier(0.23, 1, 0.320, 1);
+            animation: floatingElements 10s ease-in-out infinite;
+        }
+
+        .glass-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--primary-gradient);
+            transform: scaleX(0);
+            transition: transform 0.6s ease;
+            transform-origin: left;
+        }
+
+        .glass-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .glass-card:hover {
+            transform: translateY(-10px);
+            border-color: rgba(255, 255, 255, 0.3);
+            box-shadow: 
+                0 30px 60px rgba(0, 0, 0, 0.3),
+                0 0 50px rgba(102, 126, 234, 0.2);
+        }
+
+        /* File Upload Area */
+        .upload-zone {
+            border: 3px dashed var(--glass-border);
+            border-radius: 20px;
+            padding: 3rem 2rem;
+            text-align: center;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.320, 1);
+            cursor: pointer;
+            margin: 2rem 0;
+        }
+
+        .upload-zone::before {
+            content: '⬆';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 4rem;
+            opacity: 0.1;
+            transition: all 0.4s ease;
+            z-index: 1;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent-color);
+            transform: scale(1.02);
+            background: rgba(0, 212, 255, 0.05);
+            box-shadow: 0 20px 40px rgba(0, 212, 255, 0.3);
+        }
+
+        .upload-zone:hover::before {
+            opacity: 0.3;
+            transform: translate(-50%, -60%);
+        }
+
+        .upload-text {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            position: relative;
+            z-index: 2;
+        }
+
+        /* Metric Cards Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+
+        .metric-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(25px);
+            border: 1px solid var(--glass-border);
+            border-radius: 18px;
+            padding: 2rem;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.5s cubic-bezier(0.23, 1, 0.320, 1);
+            animation: floatingElements 12s ease-in-out infinite;
+        }
+
+        .metric-card::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -50%;
+            width: 100%;
+            height: 200%;
+            background: radial-gradient(circle, 
+                var(--accent-color) 0%, 
+                transparent 70%);
+            opacity: 0;
+            transition: all 0.6s ease;
+            animation: spin 15s linear infinite;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-15px) scale(1.05);
+            border-color: var(--accent-color);
+            box-shadow: 
+                0 25px 50px rgba(0, 212, 255, 0.4),
+                0 0 80px rgba(102, 126, 234, 0.2);
+        }
+
+        .metric-card:hover::after {
+            opacity: 0.1;
+        }
+
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--accent-gradient);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        /* Utility Classes */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .fade-in {
+            animation: fadeInUp 1s ease-out forwards;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header-title {
+                font-size: 2.5rem;
+            }
+            
+            .score-number {
+                font-size: 3rem;
+            }
+            
+            .main-header {
+                padding: 2.5rem 2rem;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .btn-futuristic {
+                display: block;
+                width: 100%;
+                margin: 1rem 0;
+            }
+        }
+
+        /* Scroll Animations */
+        @media (prefers-reduced-motion: no-preference) {
+            .scroll-reveal {
+                opacity: 0;
+                transform: translateY(50px);
+                transition: all 0.8s cubic-bezier(0.23, 1, 0.320, 1);
+            }
+            
+            .scroll-reveal.revealed {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Floating Particles -->
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+</body>
+</html>
+""", unsafe_allow_html=True)
+
+# --- App Header ---
+st.markdown("""
+<div class="main-header">
+    <h1 style='text-align: center; color: white; font-size: 3rem; margin-bottom: 0.8rem; text-shadow: 2px 2px 6px rgba(0,0,0,0.3);'>
+        📄 Professional Resume Analyzer
+    </h1>
+    <p style='text-align: center; color: white; font-size: 1.3rem; margin: 0; opacity: 0.95; text-shadow: 1px 1px 3px rgba(0,0,0,0.2);'>
+        Advanced ATS-Compatible Resume Analysis • Secure • Professional Insights
+    </p>
+    <div style='text-align: center; margin-top: 1rem;'>
+        <span style='background: rgba(255,255,255,0.2); padding: 0.5rem 1rem; border-radius: 20px; color: white; font-size: 0.9rem;'>
+            ✨ Ace the Interview • 🔒 Privacy Protected • 🚀 Instant Results
+        </span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# --- Main Layout ---
+col1, col2 = st.columns([1.3, 1], gap="large")
+
+# --- Left Column: Resume Input ---
+with col1:
+    st.markdown("### 📤 Upload Your Resume")
+    
+    tab1, tab2 = st.tabs(["📄 Upload PDF", "📝 Paste Text"])
+    
+    resume_text = ""
+    
+    with tab1:
+        uploaded_pdf = st.file_uploader(
+            "Choose your resume PDF file", 
+            type="pdf",
+            help="Upload a PDF version of your resume (max 10MB)",
+            label_visibility="collapsed"
+        )
+        
+        if uploaded_pdf:
+            with st.spinner("📖 Extracting text from your PDF..."):
+                resume_text = extract_text_from_pdf(uploaded_pdf)
+                if resume_text:
+                    word_count = len(resume_text.split())
+                    char_count = len(resume_text)
+                    st.success(f"✅ Successfully extracted {word_count:,} words and {char_count:,} characters!")
+                    
+                    with st.expander("👀 Preview extracted text (first 500 characters)"):
+                        st.text_area("", value=resume_text[:500] + ("..." if len(resume_text) > 500 else ""), 
+                                   height=150, disabled=True)
+                else:
+                    st.error("❌ Could not extract text from PDF. Please try pasting the text manually.")
+                    st.info("💡 Make sure your PDF contains selectable text (not a scanned image)")
+    
+    with tab2:
+        resume_text_input = st.text_area(
+            "Paste your complete resume text here:",
+            height=350,
+            placeholder="""Copy and paste your entire resume here...
+
+Include all sections such as:
+• Professional Summary/Objective
+• Work Experience with bullet points
+• Education & Certifications
+• Technical Skills
+• Projects (if applicable)
+• Achievements with specific metrics
+
+The more complete your resume, the better the analysis!""",
+            help="Paste the complete text version of your resume for analysis"
+        )
+        
+        if resume_text_input.strip():
+            resume_text = resume_text_input.strip()
+            word_count = len(resume_text.split())
+            st.success(f"✅ Resume loaded! {word_count:,} words ready for analysis.")
+
+# --- Right Column: Job Configuration ---
+with col2:
+    st.markdown("### 🎯 Job Target Configuration")
+    
+    # Job role selection
+    popular_roles = [
+        "Backend Developer", "Frontend Developer", "Full Stack Developer",
+        "Data Scientist", "Data Analyst", "Machine Learning Engineer", 
+        "Product Manager", "Software Engineer", "DevOps Engineer",
+        "Cloud Engineer", "Mobile Developer", "QA Engineer",
+        "UI/UX Designer", "Other"
+    ]
+    
+    selected_role = st.selectbox(
+        "What role are you targeting?",
+        popular_roles,
+        help="Select your target job role for optimized keyword analysis"
+    )
+    
+    if selected_role == "Other":
+        job_role = st.text_input(
+            "Specify your target role:", 
+            placeholder="e.g., Technical Lead, Solutions Architect, etc."
+        )
+        if not job_role:
+            job_role = "Software Engineer"  # Default fallback
+    else:
+        job_role = selected_role
+    
+    # Job description input
+    st.markdown("**Job Description (Optional but Recommended):**")
+    job_description = st.text_area(
+        "job_description",
+        height=220,
+        placeholder="""Paste the complete job description here for enhanced analysis...
+
+Including:
+• Required technical skills
+• Years of experience needed  
+• Specific tools and technologies
+• Educational requirements
+• Responsibilities and duties
+• Nice-to-have qualifications
+
+This will significantly improve keyword matching accuracy!""",
+        help="Adding the job description provides much more targeted analysis",
+        label_visibility="collapsed"
+    )
+    
+    # Show JD stats
+    if job_description:
+        jd_word_count = len(job_description.split())
+        st.caption(f"📊 Job description: {jd_word_count:,} words loaded")
+        
+        if jd_word_count < 50:
+            st.warning("⚠️ Job description seems short. More details will improve analysis accuracy.")
+
+# --- Analysis Section ---
+st.markdown("---")
+
+# Show current status
+if not resume_text:
+    st.info("👆 **Ready to start?** Upload your resume PDF or paste your resume text above to begin your professional analysis!")
+elif not job_role or job_role.strip() == "":
+    st.warning("⚠️ Please select or specify your target job role to continue.")
+else:
+    # Display resume statistics
+    st.markdown("### 📊 Resume Statistics")
+    
+    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+    
+    word_count = len(resume_text.split())
+    char_count = len(resume_text)
+    estimated_pages = max(1, round(char_count / 3000))  # Rough estimate
+    
+    with stats_col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style='color: #667eea; margin: 0; font-size: 1.8rem;'>{word_count:,}</h3>
+            <p style='margin: 0; color: #666;'>Words</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with stats_col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style='color: #667eea; margin: 0; font-size: 1.8rem;'>{estimated_pages}</h3>
+            <p style='margin: 0; color: #666;'>Est. Pages</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with stats_col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style='color: #667eea; margin: 0; font-size: 1.8rem;'>{job_role}</h3>
+            <p style='margin: 0; color: #666;'>Target Role</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with stats_col4:
+        jd_status = "✅ Added" if job_description else "❌ Missing"
+        jd_color = "#28a745" if job_description else "#dc3545"
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style='color: {jd_color}; margin: 0; font-size: 1.2rem;'>{jd_status}</h3>
+            <p style='margin: 0; color: #666;'>Job Description</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Quick length assessment
+    if word_count < 150:
+        st.warning("⚠️ **Resume seems short.** Most professional resumes are 200-800 words for optimal ATS performance.")
+    elif word_count > 1000:
+        st.warning("⚠️ **Resume might be too long.** Consider condensing to 600-800 words for better readability.")
+    else:
+        st.success("✅ **Good length!** Your resume word count is in the optimal range.")
+
+    # Analysis button
+    st.markdown("---")
+    st.markdown("<h3 style='text-align:center; margin: 2rem 0;'>🚀 Ready for Professional Analysis?</h3>", unsafe_allow_html=True)
+    
+    button_col1, button_col2, button_col3 = st.columns([1, 2, 1])
+    with button_col2:
+        analyze_button = st.button(
+            "🔍 Analyze My Resume Now", 
+            type="primary", 
+            use_container_width=True,
+            help="Start comprehensive ATS and professional analysis"
+        )
+
+    # --- Analysis Results ---
+    if analyze_button:
+        analysis_start_time = st.empty()
+        analysis_start_time.info("🔄 **Starting comprehensive analysis...** This will take a few seconds.")
+        
+        try:
+            # Perform analysis
+            with st.spinner("🤖 Analyzing resume structure, keywords, achievements, and ATS compatibility..."):
+                score, detailed_feedback = comprehensive_resume_analysis(resume_text, job_role, job_description)
+            
+            analysis_start_time.empty()  # Remove the "starting analysis" message
+            
+            # Display score with enhanced styling
+            if score >= 95:
+                color, emoji, grade, message = "#28a745", "🏆", "A+", "Perfect!"
+                advice = "Your resume is exceptionally well-optimized and ready for any ATS system!"
+            elif score >= 90:
+                color, emoji, grade, message = "#20c997", "🎉", "A", "Outstanding!"
+                advice = "Excellent optimization! You're ahead of 95% of other candidates."
+            elif score >= 80:
+                color, emoji, grade, message = "#17a2b8", "⭐", "B+", "Very Good!"
+                advice = "Strong resume with minor improvements needed for perfection."
+            elif score >= 70:
+                color, emoji, grade, message = "#ffc107", "⚡", "B", "Good!"
+                advice = "Solid foundation with some optimization opportunities."
+            elif score >= 60:
+                color, emoji, grade, message = "#fd7e14", "🔥", "C+", "Needs Work"
+                advice = "Several improvements needed for better ATS performance."
+            elif score >= 50:
+                color, emoji, grade, message = "#e83e8c", "💪", "C", "Major Work Needed"
+                advice = "Significant optimizations required for ATS success."
+            else:
+                color, emoji, grade, message = "#dc3545", "🚀", "D", "Complete Overhaul"
+                advice = "Resume needs comprehensive restructuring for ATS compatibility."
+            
+            # Enhanced score display
+            st.markdown(f"""
+            <div class="score-display" style="
+                background: linear-gradient(135deg, {color}10, {color}25);
+                border: 4px solid {color};
+                color: {color};
+            ">
+                <div style="font-size: 4rem; margin-bottom: 1rem;">{emoji}</div>
+                <div style="font-size: 3rem; margin-bottom: 0.5rem; font-weight: 800;">
+                    ATS Score: {score}/100
+                </div>
+                <div style="font-size: 1.8rem; margin-bottom: 0.5rem; font-weight: 600;">
+                    Grade: {grade} • {message}
+                </div>
+                <div style="font-size: 1.1rem; opacity: 0.8; max-width: 600px; margin: 0 auto;">
+                    {advice}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Animated progress bar
+            progress_col1, progress_col2, progress_col3 = st.columns([0.5, 2, 0.5])
+            with progress_col2:
+                progress_bar = st.progress(0)
+                # Animate progress bar
+                import time
+                for i in range(score + 1):
+                    progress_bar.progress(i / 100)
+                    time.sleep(0.02)  # Small delay for animation effect
+            
+            # Detailed analysis report
+            st.markdown("### 📋 Comprehensive Analysis Report")
+            st.markdown(f"""
+            <div class="feedback-box" style="
+            background: var(--glass-bg);
+            backdrop-filter: blur(30px);
+            border: 2px solid var(--glass-border);
+            border-radius: 25px;
+            padding: 4rem 3rem;
+            margin: 3rem 0;
+            position: relative;
+            overflow: hidden;
+            animation: morphGlow 8s ease-in-out infinite, floatingElements 6s ease-in-out infinite;
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.320, 1);
+            color: var(--text-primary);
+            ">
+            {detailed_feedback}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Score-based action plan
+            st.markdown("### 🎯 Personalized Action Plan")
+            
+            if score >= 90:
+                st.success("""
+                🎉 **Congratulations!** Your resume is exceptionally well-optimized. 
+                
+                **Final touches:**
+                • Fine-tune any remaining missing keywords
+                • Ensure perfect grammar and formatting
+                • Consider A/B testing different versions
+                • You're ready to apply with confidence!
+                """)
+            
+            elif score >= 80:
+                st.info("""
+                ⭐ **You're close to perfection!** Focus on these high-impact improvements:
+                
+                **Priority actions:**
+                1. Add the missing keywords identified above
+                2. Include more quantifiable achievements
+                3. Strengthen action verbs in bullet points
+                4. Ensure all critical sections are well-developed
+                """)
+            
+            elif score >= 70:
+                st.warning("""
+                ⚡ **Good foundation, optimization needed:**
+                
+                **Focus areas:**
+                1. **Keywords:** Add 5-10 missing role-specific terms
+                2. **Metrics:** Include numbers, percentages, and achievements
+                3. **Structure:** Strengthen weaker sections identified above
+                4. **Action verbs:** Use more powerful, specific action words
+                """)
+            
+            elif score >= 60:
+                st.error("""
+                🔥 **Significant improvements needed:**
+                
+                **Major focus areas:**
+                1. **Complete restructure:** Add missing critical sections
+                2. **Keyword optimization:** Major keyword gaps need addressing
+                3. **Content quality:** Add substantial achievements and metrics
+                4. **ATS formatting:** Ensure proper section headers and structure
+                """)
+            
+            else:
+                st.error("""
+                🚀 **Complete overhaul recommended:**
+                
+                **Essential actions:**
+                1. **Full rewrite:** Consider starting with a professional template
+                2. **Add all sections:** Experience, Education, Skills, Summary
+                3. **Keyword research:** Research and add 15+ relevant keywords
+                4. **Professional help:** Consider working with a resume writer
+                """)
+            
+            # Performance benchmarking
+            st.markdown("### 📊 Performance Benchmarking")
+            
+            benchmark_col1, benchmark_col2, benchmark_col3 = st.columns(3)
+            
+            with benchmark_col1:
+                percentile = min(95, max(5, score))
+                st.metric(
+                    label="📈 Percentile Rank", 
+                    value=f"{percentile}th",
+                    help="Your resume ranks better than this percentage of resumes"
+                )
+            
+            with benchmark_col2:
+                ats_pass_rate = min(90, max(10, score - 10))
+                st.metric(
+                    label="🤖 Est. ATS Pass Rate", 
+                    value=f"{ats_pass_rate}%",
+                    help="Estimated likelihood of passing ATS screening"
+                )
+            
+            with benchmark_col3:
+                if score >= 80:
+                    interview_potential = "High"
+                elif score >= 60:
+                    interview_potential = "Medium"
+                else:
+                    interview_potential = "Low"
+                
+                st.metric(
+                    label="📞 Interview Potential", 
+                    value=interview_potential,
+                    help="Likelihood of getting interview calls"
+                )
+            
+            # Download functionality
+            st.markdown("### 💾 Save Your Analysis")
+            
+            # Create comprehensive report
+            analysis_report = f"""PROFESSIONAL RESUME ANALYSIS REPORT
+{'='*50}
+
+CANDIDATE PROFILE:
+• Target Role: {job_role}
+• Resume Length: {word_count:,} words ({estimated_pages} pages)
+• Job Description: {'Provided' if job_description else 'Not provided'}
+
+OVERALL PERFORMANCE:
+• ATS Compatibility Score: {score}/100 (Grade: {grade})
+• Percentile Rank: {percentile}th percentile
+• Estimated ATS Pass Rate: {ats_pass_rate}%
+• Interview Potential: {interview_potential}
+
+DETAILED ANALYSIS:
+{detailed_feedback}
+
+ANALYSIS METADATA:
+• Report Generated: {st.session_state.get('analysis_date', 'Today')}
+• Analysis Type: Comprehensive ATS + Professional Review
+• Analyzer: Professional Resume Analyzer v2.0
+
+{'='*50}
+NEXT STEPS:
+1. Implement the priority recommendations above
+2. Add missing keywords naturally throughout your resume  
+3. Include more quantifiable achievements with specific metrics
+4. Re-analyze your resume after improvements to track progress
+5. Tailor your resume for each specific job application
+
+Remember: A great resume is your first step toward landing your dream job!
+{'='*50}
+            """
+            
+            col_download1, col_download2, col_download3 = st.columns(3)
+            
+            with col_download1:
+                st.download_button(
+                    label="📥 Download Full Report",
+                    data=analysis_report,
+                    file_name=f"resume_analysis_{job_role.lower().replace(' ', '_')}_score_{score}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    help="Download complete analysis with all details"
+                )
+            
+            with col_download2:
+                # Create action plan only
+                action_plan = f"""RESUME IMPROVEMENT ACTION PLAN
+Score: {score}/100 for {job_role}
+
+{detailed_feedback.split('ACTIONABLE RECOMMENDATIONS:')[1] if 'ACTIONABLE RECOMMENDATIONS:' in detailed_feedback else 'See full report for recommendations'}
+                """
+                st.download_button(
+                    label="📋 Download Action Plan",
+                    data=action_plan,
+                    file_name=f"resume_action_plan_{score}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    help="Download prioritized action items"
+                )
+            
+            with col_download3:
+                # Create keyword list
+                if 'MATCHED KEYWORDS' in detailed_feedback and 'MISSING KEYWORDS' in detailed_feedback:
+                    keyword_report = f"""KEYWORD ANALYSIS FOR {job_role.upper()}
+{'='*40}
+
+{detailed_feedback.split('MATCHED KEYWORDS')[1].split('HIGH-IMPACT MISSING KEYWORDS')[0]}
+
+MISSING KEYWORDS:
+{detailed_feedback.split('HIGH-IMPACT MISSING KEYWORDS:')[1].split('QUANTIFIABLE')[0] if 'HIGH-IMPACT MISSING KEYWORDS:' in detailed_feedback else 'See full analysis'}
+                    """
+                else:
+                    keyword_report = f"KEYWORD ANALYSIS - Score: {score}/100\nSee full report for detailed keyword analysis."
+                
+                st.download_button(
+                    label="🔍 Download Keywords",
+                    data=keyword_report,
+                    file_name=f"keywords_{job_role.lower().replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    help="Download keyword analysis"
+                )
+            
+            # Progress tracking
+            st.markdown("### 📈 Track Your Progress")
+            st.info("""
+            💡 **Improvement Tracking:**
+            1. Make the recommended changes to your resume
+            2. Re-upload and analyze again to see your new score
+            3. Compare results to track improvement
+            4. Repeat until you achieve your target score (80+ recommended)
+            
+            **Pro tip:** Save each analysis to track your progress over time!
+            """)
+            
+            # Additional resources
+            with st.expander("📚 Additional Resume Resources & Tips"):
+                st.markdown("""
+                ### 🎯 Resume Optimization Resources
+                
+                **ATS-Friendly Formatting:**
+                • Use standard section headers (Experience, Education, Skills)
+                • Stick to common fonts (Arial, Calibri, Times New Roman)
+                • Avoid tables, columns, graphics, and special characters
+                • Use bullet points for easy scanning
+                
+                **Keyword Optimization:**
+                • Mirror the exact keywords from job descriptions
+                • Use both acronyms and full terms (e.g., "AI" and "Artificial Intelligence")
+                • Include keywords in context, not just lists
+                • Research industry-specific terminology
+                
+                **Achievement Writing:**
+                • Use the STAR method (Situation, Task, Action, Result)
+                • Include specific numbers, percentages, and timeframes
+                • Show impact on business metrics (revenue, efficiency, cost savings)
+                • Use strong action verbs at the beginning of bullet points
+                
+                **Common ATS Mistakes to Avoid:**
+                • Headers and footers (ATS often can't read them)
+                • Images, charts, and graphics
+                • Fancy fonts or unusual formatting
+                • Abbreviations without explanations
+                • Spelling and grammar errors
+                """)
+        
+        except Exception as e:
+            st.error(f"❌ Analysis failed: {str(e)}")
+            st.info("""
+            **If you encounter issues:**
+            1. Check that your resume text is complete and properly formatted
+            2. Ensure you've selected a valid job role
+            3. Try refreshing the page and uploading again
+            4. Contact support if the problem persists
+            """)
+
+# --- Footer ---
+# st.markdown("---")
+# st.markdown("""
+# <div style='
+#     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+#     padding: 3rem 2rem;
+#     border-radius: 15px;
+#     margin-top: 3rem;
+#     color: white;
+#     text-align: center;
+# '>
+#     <h3 style='margin-bottom: 2rem; font-size: 1.8rem;'>🚀 Why Choose Our Resume Analyzer?</h3>
+    
+#     <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-bottom: 2rem;'>
+#         <div style='background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; backdrop-filter: blur(10px);'>
+#             <div style='font-size: 2rem; margin-bottom: 1rem;'>🔒</div>
+#             <h4 style='margin-bottom: 1rem;'>100% Private & Secure</h4>
+#             <p style='margin: 0; opacity: 0.9; font-size: 0.9rem;'>Your resume data never leaves your browser. Complete offline analysis ensures maximum privacy and security.</p>
+#         </div>
+#         <div style='background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; backdrop-filter: blur(10px);'>
+#             <div style='font-size: 2rem; margin-bottom: 1rem;'>⚡</div>
+#             <h4 style='margin-bottom: 1rem;'>Lightning Fast Results</h4>
+#             <p style='margin: 0; opacity: 0.9; font-size: 0.9rem;'>Get comprehensive analysis in seconds. No waiting for API calls or external services to process your data.</p>
+#         </div>
+#         <div style='background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; backdrop-filter: blur(10px);'>
+#             <div style='font-size: 2rem; margin-bottom: 1rem;'>🎯</div>
+#             <h4 style='margin-bottom: 1rem;'>Professional-Grade Analysis</h4>
+#             <p style='margin: 0; opacity: 0.9; font-size: 0.9rem;'>Advanced algorithms analyze structure, keywords, achievements, and ATS compatibility with recruiter-level precision.</p>
+#         </div>
+#     </div>
+    
+#     <div style='background: rgba(255,255,255,0.15); padding: 1.5rem; border-radius: 10px; backdrop-filter: blur(10px);'>
+#         <h4 style='margin-bottom: 1rem; color: #fff;'>📊 Trusted by Professionals Worldwide</h4>
+#         <p style='margin: 0; opacity: 0.9;'>
+#             Join thousands of job seekers who have improved their resume ATS scores and landing more interviews.
+#             <br><strong>Average improvement: +25 points after implementing our recommendations!</strong>
+#         </p>
+#     </div>
+    
+#     <div style='margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.2);'>
+#         <p style='margin: 0; opacity: 0.8; font-size: 0.9rem;'>
+#             💡 <strong>Pro Tip:</strong> Use this analyzer for every job application. Tailor your resume to each role for maximum ATS compatibility.
+#         </p>
+#     </div>
+# </div>
+# """, unsafe_allow_html=True)
